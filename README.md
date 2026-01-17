@@ -7,7 +7,7 @@
      ╚═════╝╚═╝  ╚═╝╚═╝     ╚══════╝ ╚═════╝ ╚══════╝╚══════╝
 
 
-<p align="center">
+<p>
   <em>Isolated. Contained. Secure.</em>
 </p>
 
