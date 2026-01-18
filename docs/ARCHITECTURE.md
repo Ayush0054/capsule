@@ -70,3 +70,42 @@
 
 4. Client sends JSON-RPC:  sandbox.delete({ id })
    └─> Server runs: docker rm -f <container>
+
+
+   ## UPDATED Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                        SDK (Client)                          │
+│  TypeScript: CapsuleClient          Python: CapsuleClient   │
+└────────────────────────────┬────────────────────────────────┘
+                             │ HTTP (JSON-RPC) / WebSocket
+                             ▼
+┌─────────────────────────────────────────────────────────────┐
+│                      Capsule Server                          │
+│                                                              │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────────┐  │
+│  │   rpc.go     │  │ websocket.go │  │     main.go      │  │
+│  │  JSON-RPC    │  │  Terminal    │  │   Entry point    │  │
+│  └──────┬───────┘  └──────┬───────┘  └──────────────────┘  │
+│         └────────┬────────┘                                  │
+│                  ▼                                           │
+│         ┌────────────────┐                                  │
+│         │    Provider    │  Interface                       │
+│         └────────┬───────┘                                  │
+└──────────────────┼──────────────────────────────────────────┘
+                   ▼
+┌─────────────────────────────────────────────────────────────┐
+│                   DockerProvider                             │
+│  - Container lifecycle (create/delete)                      │
+│  - Command execution (docker exec)                          │
+│  - File operations (read/write/list)                        │
+│  - TTL-based garbage collection                             │
+└─────────────────────────────────────────────────────────────┘
+                   │
+                   ▼
+┌─────────────────────────────────────────────────────────────┐
+│                    Docker Daemon                             │
+│  Containers with: No network, dropped caps, resource limits │
+└─────────────────────────────────────────────────────────────┘
+```
