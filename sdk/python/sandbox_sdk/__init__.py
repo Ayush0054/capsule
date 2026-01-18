@@ -1,2 +1,0 @@
-# Sandbox SDK Python package
-

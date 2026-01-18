@@ -19,8 +19,12 @@ func main() {
 	// Create RPC server with provider
 	server := &rpc.Server{P: provider}
 
+	// Create terminal handler for WebSocket
+	terminal := &rpc.TerminalHandler{P: provider}
+
 	// Mount handlers
 	http.Handle("/rpc", server)
+	http.Handle("/terminal/", terminal)
 
 	// Health check
 	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {

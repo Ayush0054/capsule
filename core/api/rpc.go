@@ -2,6 +2,7 @@ package rpc
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -85,12 +86,52 @@ type DeleteResult struct {
 	OK bool `json:"ok"`
 }
 
-// ---- Provider interface you’ll implement with Docker ----
+// ---- File operation params/results ----
+
+type WriteFileParams struct {
+	ID      string `json:"id"`
+	Path    string `json:"path"`
+	Content string `json:"content"` // base64 encoded for binary safety
+}
+
+type WriteFileResult struct {
+	OK bool `json:"ok"`
+}
+
+type ReadFileParams struct {
+	ID   string `json:"id"`
+	Path string `json:"path"`
+}
+
+type ReadFileResult struct {
+	Content string `json:"content"` // base64 encoded
+}
+
+type ListDirParams struct {
+	ID   string `json:"id"`
+	Path string `json:"path"`
+}
+
+type FileInfo struct {
+	Name  string `json:"name"`
+	Path  string `json:"path"`
+	IsDir bool   `json:"is_dir"`
+	Size  int64  `json:"size"`
+}
+
+type ListDirResult struct {
+	Files []FileInfo `json:"files"`
+}
+
+// ---- Provider interface you'll implement with Docker ----
 
 type Provider interface {
 	Create(ctx context.Context, template string, ttl time.Duration) (sandboxID string, expiresAt time.Time, err error)
 	Exec(ctx context.Context, sandboxID string, cmd []string, cwd string, env map[string]string, maxOut, maxErr int) (stdout, stderr []byte, exitCode int, timedOut bool, outTrunc, errTrunc bool, duration time.Duration, err error)
 	Delete(ctx context.Context, sandboxID string) error
+	WriteFile(ctx context.Context, sandboxID, path string, content []byte) error
+	ReadFile(ctx context.Context, sandboxID, path string) ([]byte, error)
+	ListDir(ctx context.Context, sandboxID, path string) ([]FileInfo, error)
 }
 
 // ---- HTTP handler ----
@@ -209,6 +250,68 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeRPC(w, RPCResponse{JSONRPC: "2.0", ID: req.ID, Result: DeleteResult{OK: true}})
+
+	case "sandbox.v1.writeFile":
+		var p WriteFileParams
+		if err := json.Unmarshal(req.Params, &p); err != nil || p.ID == "" || p.Path == "" {
+			writeRPC(w, RPCResponse{JSONRPC: "2.0", ID: req.ID, Error: rpcErr(-32001, "invalid params", "INVALID_PARAMS", false, nil)})
+			return
+		}
+
+		// Decode base64 content
+		content, err := base64.StdEncoding.DecodeString(p.Content)
+		if err != nil {
+			writeRPC(w, RPCResponse{JSONRPC: "2.0", ID: req.ID, Error: rpcErr(-32001, "invalid base64 content", "INVALID_PARAMS", false, nil)})
+			return
+		}
+
+		if err := s.P.WriteFile(r.Context(), p.ID, p.Path, content); err != nil {
+			writeRPC(w, RPCResponse{JSONRPC: "2.0", ID: req.ID, Error: rpcErr(-32008, "write file failed", "WRITE_FILE_FAILED", true, map[string]any{"err": err.Error()})})
+			return
+		}
+		writeRPC(w, RPCResponse{JSONRPC: "2.0", ID: req.ID, Result: WriteFileResult{OK: true}})
+
+	case "sandbox.v1.readFile":
+		var p ReadFileParams
+		if err := json.Unmarshal(req.Params, &p); err != nil || p.ID == "" || p.Path == "" {
+			writeRPC(w, RPCResponse{JSONRPC: "2.0", ID: req.ID, Error: rpcErr(-32001, "invalid params", "INVALID_PARAMS", false, nil)})
+			return
+		}
+
+		content, err := s.P.ReadFile(r.Context(), p.ID, p.Path)
+		if err != nil {
+			writeRPC(w, RPCResponse{JSONRPC: "2.0", ID: req.ID, Error: rpcErr(-32009, "read file failed", "READ_FILE_FAILED", true, map[string]any{"err": err.Error()})})
+			return
+		}
+
+		// Encode as base64 for safe transport
+		encoded := base64.StdEncoding.EncodeToString(content)
+		writeRPC(w, RPCResponse{JSONRPC: "2.0", ID: req.ID, Result: ReadFileResult{Content: encoded}})
+
+	case "sandbox.v1.listDir":
+		var p ListDirParams
+		if err := json.Unmarshal(req.Params, &p); err != nil || p.ID == "" {
+			writeRPC(w, RPCResponse{JSONRPC: "2.0", ID: req.ID, Error: rpcErr(-32001, "invalid params", "INVALID_PARAMS", false, nil)})
+			return
+		}
+
+		path := p.Path
+		if path == "" {
+			path = "/workspace"
+		}
+
+		files, err := s.P.ListDir(r.Context(), p.ID, path)
+		if err != nil {
+			writeRPC(w, RPCResponse{JSONRPC: "2.0", ID: req.ID, Error: rpcErr(-32010, "list dir failed", "LIST_DIR_FAILED", true, map[string]any{"err": err.Error()})})
+			return
+		}
+
+		// Convert to RPC FileInfo type
+		rpcFiles := make([]FileInfo, len(files))
+		for i, f := range files {
+			rpcFiles[i] = FileInfo{Name: f.Name, Path: f.Path, IsDir: f.IsDir, Size: f.Size}
+		}
+		writeRPC(w, RPCResponse{JSONRPC: "2.0", ID: req.ID, Result: ListDirResult{Files: rpcFiles}})
 
 	default:
 		// JSON-RPC standard “method not found”

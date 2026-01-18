@@ -4,6 +4,7 @@ package docker
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"sync"
@@ -14,6 +15,8 @@ import (
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/stdcopy"
 	"github.com/google/uuid"
+
+	rpc "sandbox/core/api"
 )
 
 // DockerProvider implements the Provider interface from rpc.go
@@ -281,6 +284,175 @@ func (p *DockerProvider) cleanupExpired() {
 		_ = p.Delete(ctx, id)
 		cancel()
 	}
+}
+
+
+// WriteFile writes content to a file in the sandbox
+func (p *DockerProvider) WriteFile(ctx context.Context, sandboxID, path string, content []byte) error {
+	p.mu.RLock()
+	sandbox, ok := p.sandboxes[sandboxID]
+	p.mu.RUnlock()
+
+	if !ok {
+		return fmt.Errorf("sandbox not found: %s", sandboxID)
+	}
+
+	// Use base64 to safely transfer binary content
+	encoded := base64.StdEncoding.EncodeToString(content)
+
+	// Create parent directories and write file
+	cmd := fmt.Sprintf("mkdir -p $(dirname %s) && echo %s | base64 -d > %s", path, encoded, path)
+
+	execConfig := container.ExecOptions{
+		Cmd:          []string{"sh", "-c", cmd},
+		AttachStdout: true,
+		AttachStderr: true,
+	}
+
+	execID, err := p.client.ContainerExecCreate(ctx, sandbox.ContainerID, execConfig)
+	if err != nil {
+		return fmt.Errorf("exec create failed: %w", err)
+	}
+
+	resp, err := p.client.ContainerExecAttach(ctx, execID.ID, container.ExecAttachOptions{})
+	if err != nil {
+		return fmt.Errorf("exec attach failed: %w", err)
+	}
+	defer resp.Close()
+
+	// Wait for completion
+	_, _ = io.Copy(io.Discard, resp.Reader)
+
+	// Check exit code
+	inspectResp, err := p.client.ContainerExecInspect(ctx, execID.ID)
+	if err != nil {
+		return fmt.Errorf("exec inspect failed: %w", err)
+	}
+	if inspectResp.ExitCode != 0 {
+		return fmt.Errorf("write file failed with exit code %d", inspectResp.ExitCode)
+	}
+
+	return nil
+}
+
+// ReadFile reads content from a file in the sandbox
+func (p *DockerProvider) ReadFile(ctx context.Context, sandboxID, path string) ([]byte, error) {
+	p.mu.RLock()
+	sandbox, ok := p.sandboxes[sandboxID]
+	p.mu.RUnlock()
+
+	if !ok {
+		return nil, fmt.Errorf("sandbox not found: %s", sandboxID)
+	}
+
+	execConfig := container.ExecOptions{
+		Cmd:          []string{"cat", path},
+		AttachStdout: true,
+		AttachStderr: true,
+	}
+
+	execID, err := p.client.ContainerExecCreate(ctx, sandbox.ContainerID, execConfig)
+	if err != nil {
+		return nil, fmt.Errorf("exec create failed: %w", err)
+	}
+
+	resp, err := p.client.ContainerExecAttach(ctx, execID.ID, container.ExecAttachOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("exec attach failed: %w", err)
+	}
+	defer resp.Close()
+
+	var stdoutBuf, stderrBuf bytes.Buffer
+	_, _ = stdcopy.StdCopy(&stdoutBuf, &stderrBuf, resp.Reader)
+
+	// Check exit code
+	inspectResp, err := p.client.ContainerExecInspect(ctx, execID.ID)
+	if err != nil {
+		return nil, fmt.Errorf("exec inspect failed: %w", err)
+	}
+	if inspectResp.ExitCode != 0 {
+		return nil, fmt.Errorf("file not found or read error: %s", stderrBuf.String())
+	}
+
+	return stdoutBuf.Bytes(), nil
+}
+
+// ListDir lists files in a directory in the sandbox
+func (p *DockerProvider) ListDir(ctx context.Context, sandboxID, path string) ([]rpc.FileInfo, error) {
+	p.mu.RLock()
+	sandbox, ok := p.sandboxes[sandboxID]
+	p.mu.RUnlock()
+
+	if !ok {
+		return nil, fmt.Errorf("sandbox not found: %s", sandboxID)
+	}
+
+	// Use stat to get detailed file info in JSON-like format
+	cmd := fmt.Sprintf(`find %s -maxdepth 1 -printf '%%f\t%%s\t%%Y\t%%T@\n' 2>/dev/null | tail -n +2`, path)
+
+	execConfig := container.ExecOptions{
+		Cmd:          []string{"sh", "-c", cmd},
+		AttachStdout: true,
+		AttachStderr: true,
+	}
+
+	execID, err := p.client.ContainerExecCreate(ctx, sandbox.ContainerID, execConfig)
+	if err != nil {
+		return nil, fmt.Errorf("exec create failed: %w", err)
+	}
+
+	resp, err := p.client.ContainerExecAttach(ctx, execID.ID, container.ExecAttachOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("exec attach failed: %w", err)
+	}
+	defer resp.Close()
+
+	var stdoutBuf, stderrBuf bytes.Buffer
+	_, _ = stdcopy.StdCopy(&stdoutBuf, &stderrBuf, resp.Reader)
+
+	// Parse output
+	var files []rpc.FileInfo
+	lines := bytes.Split(bytes.TrimSpace(stdoutBuf.Bytes()), []byte("\n"))
+	for _, line := range lines {
+		if len(line) == 0 {
+			continue
+		}
+		parts := bytes.Split(line, []byte("\t"))
+		if len(parts) < 4 {
+			continue
+		}
+
+		name := string(parts[0])
+		size := int64(0)
+		fmt.Sscanf(string(parts[1]), "%d", &size)
+		isDir := string(parts[2]) == "d"
+
+		files = append(files, rpc.FileInfo{
+			Name:  name,
+			Path:  path + "/" + name,
+			IsDir: isDir,
+			Size:  size,
+		})
+	}
+
+	return files, nil
+}
+
+// GetContainerID returns the Docker container ID for a sandbox (used by WebSocket handler)
+func (p *DockerProvider) GetContainerID(sandboxID string) (string, error) {
+	p.mu.RLock()
+	sandbox, ok := p.sandboxes[sandboxID]
+	p.mu.RUnlock()
+
+	if !ok {
+		return "", fmt.Errorf("sandbox not found: %s", sandboxID)
+	}
+	return sandbox.ContainerID, nil
+}
+
+// GetClient returns the Docker client (used by WebSocket handler)
+func (p *DockerProvider) GetClient() *client.Client {
+	return p.client
 }
 
 // limitedWriter wraps a writer with a max byte limit
