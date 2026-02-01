@@ -227,3 +227,41 @@ ws.onmessage = (e) => terminal.write(e.data);
 terminal.onData((data) => ws.send(data));
 ```
 
+
+### Roadmap to Explore 
+
+#### Container Performance
+- [ ] Warm container pooling — pre-create idle containers, assign on request (~10-50ms starts)
+- [ ] Pre-built images with dependencies baked in (NumPy, pandas, etc.)
+- [ ] Container reuse and workspace reset between executions
+
+#### Security & Isolation
+- [ ] Firecracker microVM provider as an alternative to Docker
+- [ ] gVisor runtime support for kernel-level syscall filtering
+- [ ] Per-sandbox network policies (allow-list specific endpoints)
+- [ ] Seccomp profiles per template
+
+#### Orchestration & Scale
+- [ ] Kubernetes provider for multi-node deployments
+- [ ] Auto-scaling container pools based on demand
+- [ ] Distributed sandbox state with Redis/etcd
+- [ ] Horizontal API server scaling behind a load balancer
+
+#### Sandbox Features
+- [ ] Snapshot & restore — save sandbox state, resume later
+- [ ] Persistent volumes — mount storage that survives sandbox restarts
+- [ ] Custom templates — user-defined Dockerfiles as templates
+- [ ] Dependency installation API — install packages without rebuilding images
+- [ ] Sandbox cloning — fork a running sandbox
+
+#### Agent Integration
+- [ ] Streaming output — real-time stdout/stderr over SSE or WebSocket
+- [ ] Execution callbacks — webhook on completion
+- [ ] Batch execution — run multiple commands in sequence, return all results
+- [ ] Context carry-over — maintain environment variables across exec calls
+
+#### Observability
+- [ ] Per-sandbox resource usage metrics (CPU, memory, I/O)
+- [ ] Execution logs with structured metadata
+- [ ] OpenTelemetry tracing for API calls
+- [ ] Dashboard for active sandboxes and pool status
